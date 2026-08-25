@@ -58,7 +58,8 @@ class EkopiWebViewScreen extends StatefulWidget {
 
   static const String defaultUrl = 'https://ekopi-poldakalteng.com';
   static const String configApiUrl = 'https://ekopi-poldakalteng.com/api/app-config';
-  static const String backupConfigUrl = 'https://raw.githubusercontent.com/projectnya-noval/ekopi-kalteng/main/app-config.json';
+  static const String backupConfigUrl = 'https://raw.githubusercontent.com/projectnya-noval/ekopi-kalteng-mobile/main/app-config.json';
+  static const String backupWebConfigUrl = 'https://raw.githubusercontent.com/projectnya-noval/ekopi-kalteng/main/app-config.json';
 
   @override
   State<EkopiWebViewScreen> createState() => _EkopiWebViewScreenState();
@@ -118,22 +119,27 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
         debugPrint('Primary server config failed, switching to GitHub backup config... $e');
       }
 
-      // 2. Fail-Safe Backup: Jika Server Utama Mati/Expired, Ambil dari GitHub Raw JSON
+      // 2. Fail-Safe Backup: Jika Server Utama Mati/Expired, Ambil dari GitHub Raw JSON (Mobile / Web Repo)
       if (remoteUrl == null || remoteUrl.isEmpty) {
-        try {
-          final backupResponse = await http
-              .get(Uri.parse(EkopiWebViewScreen.backupConfigUrl))
-              .timeout(const Duration(seconds: 4));
+        for (final backupUrl in [
+          EkopiWebViewScreen.backupConfigUrl,
+          EkopiWebViewScreen.backupWebConfigUrl,
+        ]) {
+          try {
+            final backupResponse = await http
+                .get(Uri.parse(backupUrl))
+                .timeout(const Duration(seconds: 3));
 
-          if (backupResponse.statusCode == 200) {
-            final data = json.decode(backupResponse.body);
-            if (data != null && data['target_url'] != null) {
-              remoteUrl = data['target_url'].toString().trim();
-              debugPrint('Loaded target URL from GitHub backup config: $remoteUrl');
+            if (backupResponse.statusCode == 200) {
+              final data = json.decode(backupResponse.body);
+              if (data != null && data['target_url'] != null) {
+                remoteUrl = data['target_url'].toString().trim();
+                if (remoteUrl.isNotEmpty) break;
+              }
             }
+          } catch (e) {
+            debugPrint('GitHub backup config fetch notice: $e');
           }
-        } catch (e) {
-          debugPrint('GitHub backup config fetch error: $e');
         }
       }
 
