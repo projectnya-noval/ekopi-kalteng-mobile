@@ -2,6 +2,7 @@
   "success": true,
   "target_url": "https://ekopi-poldakalteng.com",
   "app_name": "EKOPI KALTENG",
+  "app_sub_name": "e-Konseling Psikologi Biro SDM",
   "min_version": "1.0.0",
   "maintenance": false,
   "maintenance_message": "Sistem sedang dalam pemeliharaan rutin. Silakan coba beberapa saat lagi."

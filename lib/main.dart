@@ -73,6 +73,8 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
   String _errorMessage = '';
   bool _verificationDialogShown = false;
   String _targetUrl = EkopiWebViewScreen.defaultUrl;
+  String _appName = 'EKOPI KALTENG';
+  String _appSubName = 'e-Konseling Psikologi Biro SDM';
 
   @override
   void initState() {
@@ -89,21 +91,31 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
     super.dispose();
   }
 
-  /// Memuat & Mengaplikasikan Konfigurasi URL Dinamis (Dengan Dual Fail-Safe Server & GitHub Backup)
+  /// Memuat & Mengaplikasikan Konfigurasi URL & Identitas Dinamis (Dengan Dual Fail-Safe Server & GitHub Backup)
   Future<void> _fetchAndApplyDynamicConfig() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       
-      // Load cached URL first if available
+      // Load cached URL & app settings first if available
       final cachedUrl = prefs.getString('cached_target_url');
       if (cachedUrl != null && cachedUrl.isNotEmpty && cachedUrl != _targetUrl) {
         _targetUrl = cachedUrl;
         _controller.loadRequest(Uri.parse(_targetUrl));
       }
 
-      String? remoteUrl;
+      final cachedAppName = prefs.getString('cached_app_name');
+      final cachedAppSubName = prefs.getString('cached_app_sub_name');
+      if (cachedAppName != null && cachedAppName.isNotEmpty) {
+        _appName = cachedAppName;
+      }
+      if (cachedAppSubName != null && cachedAppSubName.isNotEmpty) {
+        _appSubName = cachedAppSubName;
+      }
 
-      // 1. Coba Server Utama
+      String? remoteUrl;
+      Map<String, dynamic>? remoteData;
+
+      // 1. Coba Server Utama (Query tabel app_settings)
       try {
         final response = await http
             .get(Uri.parse(EkopiWebViewScreen.configApiUrl))
@@ -113,6 +125,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
           final data = json.decode(response.body);
           if (data != null && data['target_url'] != null) {
             remoteUrl = data['target_url'].toString().trim();
+            remoteData = data;
           }
         }
       } catch (e) {
@@ -134,6 +147,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
               final data = json.decode(backupResponse.body);
               if (data != null && data['target_url'] != null) {
                 remoteUrl = data['target_url'].toString().trim();
+                remoteData = data;
                 if (remoteUrl.isNotEmpty) break;
               }
             }
@@ -141,6 +155,24 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
             debugPrint('GitHub backup config fetch notice: $e');
           }
         }
+      }
+
+      if (remoteData != null) {
+        if (remoteData['app_name'] != null) {
+          final name = remoteData['app_name'].toString().trim();
+          if (name.isNotEmpty) {
+            _appName = name;
+            await prefs.setString('cached_app_name', name);
+          }
+        }
+        if (remoteData['app_sub_name'] != null) {
+          final sub = remoteData['app_sub_name'].toString().trim();
+          if (sub.isNotEmpty) {
+            _appSubName = sub;
+            await prefs.setString('cached_app_sub_name', sub);
+          }
+        }
+        if (mounted) setState(() {});
       }
 
       if (remoteUrl != null && remoteUrl.isNotEmpty && remoteUrl != _targetUrl) {
@@ -450,27 +482,31 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                   ),
                 ),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Text(
-                        'EKOPI KALTENG',
-                        style: TextStyle(
+                        _appName,
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 13,
                           fontWeight: FontWeight.w900,
                           letterSpacing: 0.5,
                         ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                       Text(
-                        'e-Konseling Psikologi Biro SDM',
-                        style: TextStyle(
+                        _appSubName,
+                        style: const TextStyle(
                           color: Color(0xFF94A3B8),
                           fontSize: 10,
                           fontWeight: FontWeight.w500,
                         ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
