@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:onesignal_flutter/onesignal_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -287,6 +288,92 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
 
     final WebViewController controller =
         WebViewController.fromPlatformCreationParams(params);
+
+    if (controller.platform is AndroidWebViewController) {
+      final androidController = controller.platform as AndroidWebViewController;
+      androidController.setOnShowFileSelector((FileSelectorParams fileParams) async {
+        final ImagePicker picker = ImagePicker();
+        
+        final source = await showModalBottomSheet<ImageSource>(
+          context: context,
+          backgroundColor: const Color(0xFF1E293B),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          builder: (ctx) => SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16.0, horizontal: 20.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF475569),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Pilih Sumber Swafoto / Dokumen',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  ListTile(
+                    leading: const CircleAvatar(
+                      backgroundColor: Color(0x26F59E0B),
+                      child: Icon(Icons.camera_alt, color: Color(0xFFF59E0B)),
+                    ),
+                    title: const Text(
+                      'Kamera (Swafoto Langsung)',
+                      style: TextStyle(color: Colors.white, fontSize: 14),
+                    ),
+                    subtitle: const Text(
+                      'Ambil foto swafoto langsung dari kamera HP',
+                      style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                    ),
+                    onTap: () => Navigator.pop(ctx, ImageSource.camera),
+                  ),
+                  ListTile(
+                    leading: const CircleAvatar(
+                      backgroundColor: Color(0x263B82F6),
+                      child: Icon(Icons.photo_library, color: Color(0xFF3B82F6)),
+                    ),
+                    title: const Text(
+                      'Galeri HP / File Foto',
+                      style: TextStyle(color: Colors.white, fontSize: 14),
+                    ),
+                    subtitle: const Text(
+                      'Pilih foto swafoto yang sudah ada di galeri HP',
+                      style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                    ),
+                    onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+
+        if (source != null) {
+          final XFile? file = await picker.pickImage(
+            source: source,
+            maxWidth: 1920,
+            maxHeight: 1920,
+            imageQuality: 85,
+          );
+          if (file != null) {
+            return [Uri.file(file.path).toString()];
+          }
+        }
+        return [];
+      });
+    }
 
     controller
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
