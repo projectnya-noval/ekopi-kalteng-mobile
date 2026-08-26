@@ -258,10 +258,11 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
     );
   }
 
-  /// Request Android Runtime Permissions for Camera, Storage & Location
+  /// Request Android Runtime Permissions for Notifications, Camera, Storage & Location
   Future<void> _requestAppPermissions() async {
     try {
       await [
+        Permission.notification,
         Permission.camera,
         Permission.microphone,
         Permission.storage,
