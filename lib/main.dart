@@ -74,15 +74,15 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
   int _loadingProgress = 0;
   bool _isLoading = true;
   bool _hasError = false;
-  String _errorMessage = '';
   bool _verificationDialogShown = false;
   String _targetUrl = EkopiWebViewScreen.defaultUrl;
   String _appName = 'EKOPI KALTENG';
   String _appSubName = 'e-Konseling Psikologi Biro SDM';
 
-  // Real-time Internet Connectivity Monitoring States
+  // Real-time Internet Connectivity & Loading States
   bool _isOffline = false;
   bool _isCheckingConnection = false;
+  bool _hasInitialLoaded = false;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _connectivityPingTimer;
 
@@ -117,8 +117,8 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
       _checkInternetConnectivity();
     });
 
-    // 3. Periodic Health Check (Cek ulang koneksi setiap 5 detik bila sedang offline)
-    _connectivityPingTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    // 3. Periodic Health Check (Cek ulang koneksi setiap 4 detik bila sedang offline)
+    _connectivityPingTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       if (_isOffline) {
         _checkInternetConnectivity();
       }
@@ -165,14 +165,12 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
           _isOffline = !isInternetReachable;
           if (_isOffline) {
             _hasError = true;
-            _errorMessage = 'Koneksi internet Anda sedang tidak aktif. Silakan periksa jaringan Wi-Fi atau Paket Data seluler Anda.';
           } else {
             _hasError = false;
-            _errorMessage = '';
           }
         });
 
-        // LOGIKA UTAMA: Jika sebelumnya offline dan sekarang internet AKTIF kembali -> Otomatis muat ulang halaman website!
+        // LOGIKA AUTOMATIC RECOVERY: Jika sebelumnya offline dan sekarang internet AKTIF kembali -> Tutup overlay & muat ulang webview!
         if ((wasOffline && isInternetReachable) || (forceReload && isInternetReachable)) {
           debugPrint('🌐 [INTERNET RESTORED]: Reloading WebView automatically...');
           _controller.loadRequest(Uri.parse(_targetUrl));
@@ -185,12 +183,11 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
     }
   }
 
-  /// Memuat & Mengaplikasikan Konfigurasi URL & Identitas Dinamis (Dengan Dual Fail-Safe Server & GitHub Backup)
+  /// Memuat & Mengaplikasikan Konfigurasi URL & Identitas Dinamis
   Future<void> _fetchAndApplyDynamicConfig() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       
-      // Load cached URL & app settings first if available
       final cachedUrl = prefs.getString('cached_target_url');
       if (cachedUrl != null && cachedUrl.isNotEmpty && cachedUrl != _targetUrl) {
         _targetUrl = cachedUrl;
@@ -211,7 +208,6 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
       String? remoteUrl;
       Map<String, dynamic>? remoteData;
 
-      // 1. Coba Server Utama (Query tabel app_settings)
       try {
         final response = await http
             .get(Uri.parse(EkopiWebViewScreen.configApiUrl))
@@ -228,7 +224,6 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
         debugPrint('Primary server config failed, switching to GitHub backup config... $e');
       }
 
-      // 2. Fail-Safe Backup: Jika Server Utama Mati/Expired, Ambil dari GitHub Raw JSON (Mobile / Web Repo)
       if (remoteUrl == null || remoteUrl.isEmpty) {
         for (final backupUrl in [
           EkopiWebViewScreen.backupConfigUrl,
@@ -490,7 +485,6 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                 _isLoading = true;
                 if (!_isOffline) {
                   _hasError = false;
-                  _errorMessage = '';
                 }
               });
             }
@@ -500,6 +494,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
               setState(() {
                 _isLoading = false;
                 _loadingProgress = 100;
+                _hasInitialLoaded = true; // Tandai WebView telah berhasil dimuat
               });
             }
           },
@@ -509,7 +504,6 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                 _hasError = true;
                 _isOffline = true;
                 _isLoading = false;
-                _errorMessage = 'Koneksi internet Anda sedang tidak aktif. Silakan periksa jaringan Wi-Fi atau Paket Data seluler Anda.';
               });
             }
           },
@@ -787,11 +781,20 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                   minHeight: 3,
                 ),
 
-              // Main Body Content (WebView atau Screen Placeholder Offline)
+              // Main Content: Stack antara WebView, Screen Placeholder, dan Full Screen Overlay Popup
               Expanded(
-                child: (_hasError || _isOffline)
-                    ? _buildErrorScreen()
-                    : WebViewWidget(controller: _controller),
+                child: Stack(
+                  children: [
+                    // LOGIKA 1: Screen Placeholder jika pertama kali buka app tanpa koneksi
+                    (_isOffline && !_hasInitialLoaded)
+                        ? _buildInitialOfflinePlaceholder()
+                        : WebViewWidget(controller: _controller),
+
+                    // LOGIKA 2: Full-screen Popup Overlay yang menutupi WebView saat internet mati KETIKA WebView SEDANG DIBUKA
+                    if (_isOffline && _hasInitialLoaded)
+                      _buildLiveOfflineOverlayPopup(),
+                  ],
+                ),
               ),
             ],
           ),
@@ -800,8 +803,8 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
     );
   }
 
-  /// Screen Placeholder "Koneksi Internet Anda Sedang Tidak Aktif" (Offline Realtime Monitor UI)
-  Widget _buildErrorScreen() {
+  /// LOGIKA 1: Screen Placeholder "Koneksi internet Anda sedang tidak aktif" (Saat Pertama Kali Buka App Tanpa Internet)
+  Widget _buildInitialOfflinePlaceholder() {
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
       child: Container(
@@ -812,7 +815,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
           children: [
             const SizedBox(height: 20),
             
-            // Icon Wireless Offline & Pulse Glow Animation
+            // Icon Wireless Offline
             Stack(
               alignment: Alignment.center,
               children: [
@@ -922,7 +925,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                   Text(
                     _isCheckingConnection
                         ? 'Mencoba menghubungkan kembali...'
-                        : 'Memantau jaringan otomatis setiap 5 detik',
+                        : 'Memantau jaringan otomatis...',
                     style: const TextStyle(
                       color: Color(0xFFCBD5E1),
                       fontSize: 11,
@@ -935,7 +938,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
 
             const SizedBox(height: 32),
 
-            // Primary Action Button (Muat Ulang / Cek Koneksi)
+            // Primary Action Button (Muat Ulang / Cek KoneKSI)
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -992,6 +995,144 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// LOGIKA 2: Full-Screen Popup Overlay yang Menutupi Seluruh Screen WebView Saat Koneksi Mati KETIKA WebView Sedang Dibuka
+  Widget _buildLiveOfflineOverlayPopup() {
+    return Positioned.fill(
+      child: AbsorbPointer(
+        absorbing: true, // Menutup interaksi & klik pada webview di bawahnya 100%
+        child: Container(
+          color: const Color(0xED0F172A), // Background Gelap Transparan 93% Menutupi Layar WebView
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: const Color(0x66E11D48), width: 1.5),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x66000000),
+                    blurRadius: 24,
+                    offset: Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Header Alert Badge Icon
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      color: const Color(0x26E11D48),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0x66E11D48), width: 2),
+                    ),
+                    child: const Icon(
+                      Icons.signal_wifi_connected_no_internet_4_rounded,
+                      color: Color(0xFFFB7185),
+                      size: 38,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+
+                  // Warning Title
+                  const Text(
+                    'Koneksi internet tidak stabil, periksa koneksi internet anda',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Warning Message Text
+                  const Text(
+                    'Perangkat Anda kehilangan sambungan jaringan. Layar dikunci sementara hingga koneksi internet terhubung kembali.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFFCBD5E1),
+                      fontSize: 12,
+                      height: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Realtime Auto-Reconnect Monitoring Spinner
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F172A),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFF334155)),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFF59E0B)),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          _isCheckingConnection
+                              ? 'Mencoba menyambungkan kembali...'
+                              : 'Memantau jaringan otomatis secara realtime...',
+                          style: const TextStyle(
+                            color: Color(0xFF94A3B8),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Action Button
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFF59E0B),
+                        foregroundColor: const Color(0xFF0F172A),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      onPressed: () => _checkInternetConnectivity(forceReload: true),
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: const Text(
+                        'PERIKSA KONEKSI SEKARANG',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 12,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
