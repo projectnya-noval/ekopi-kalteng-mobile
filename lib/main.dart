@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -77,19 +80,109 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
   String _appName = 'EKOPI KALTENG';
   String _appSubName = 'e-Konseling Psikologi Biro SDM';
 
+  // Real-time Internet Connectivity Monitoring States
+  bool _isOffline = false;
+  bool _isCheckingConnection = false;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  Timer? _connectivityPingTimer;
+
   @override
   void initState() {
     super.initState();
     _initOneSignal();
     _requestAppPermissions();
     _initWebViewController();
+    _initRealtimeConnectivity();
     _fetchAndApplyDynamicConfig();
   }
 
   @override
   void dispose() {
+    _connectivitySubscription?.cancel();
+    _connectivityPingTimer?.cancel();
     OneSignalService.instance.removePushSubscriptionObserver(_onPushSubscriptionChanged);
     super.dispose();
+  }
+
+  /// Inisialisasi Real-time Connectivity Monitor & Periodic Health Ping
+  void _initRealtimeConnectivity() {
+    // 1. Cek Koneksi Pertama Kali Saat Aplikasi Dibuka
+    _checkInternetConnectivity();
+
+    // 2. Real-time Stream Listener dari OS Android (Bila status WiFi/Mobile Data Berubah)
+    _connectivitySubscription = Connectivity()
+        .onConnectivityChanged
+        .listen((List<ConnectivityResult> results) {
+      debugPrint('📡 [REALTIME CONNECTIVITY CHANGE]: $results');
+      _checkInternetConnectivity();
+    });
+
+    // 3. Periodic Health Check (Cek ulang koneksi setiap 5 detik bila sedang offline)
+    _connectivityPingTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_isOffline) {
+        _checkInternetConnectivity();
+      }
+    });
+  }
+
+  /// Memeriksa Koneksi Internet secara Aktif (Dengan DNS/HTTP Ping Real-Time)
+  Future<void> _checkInternetConnectivity({bool forceReload = false}) async {
+    if (_isCheckingConnection) return;
+    _isCheckingConnection = true;
+
+    try {
+      final connectivityResults = await Connectivity().checkConnectivity();
+      final hasNetworkInterface = connectivityResults.any((result) =>
+          result == ConnectivityResult.mobile ||
+          result == ConnectivityResult.wifi ||
+          result == ConnectivityResult.ethernet);
+
+      bool isInternetReachable = false;
+
+      if (hasNetworkInterface) {
+        try {
+          final result = await InternetAddress.lookup('ekopi-poldakalteng.com')
+              .timeout(const Duration(seconds: 3));
+          if (result.isNotEmpty && result[0].rawAddress.isNotEmpty) {
+            isInternetReachable = true;
+          }
+        } catch (_) {
+          try {
+            final result = await InternetAddress.lookup('google.com')
+                .timeout(const Duration(seconds: 3));
+            if (result.isNotEmpty && result[0].rawAddress.isNotEmpty) {
+              isInternetReachable = true;
+            }
+          } catch (_) {
+            isInternetReachable = false;
+          }
+        }
+      }
+
+      if (mounted) {
+        final wasOffline = _isOffline;
+        setState(() {
+          _isOffline = !isInternetReachable;
+          if (_isOffline) {
+            _hasError = true;
+            _errorMessage = 'Koneksi internet Anda sedang tidak aktif. Silakan periksa jaringan Wi-Fi atau Paket Data seluler Anda.';
+          } else {
+            _hasError = false;
+            _errorMessage = '';
+          }
+        });
+
+        // LOGIKA UTAMA: Jika sebelumnya offline dan sekarang internet AKTIF kembali -> Otomatis muat ulang halaman website!
+        if ((wasOffline && isInternetReachable) || (forceReload && isInternetReachable)) {
+          debugPrint('🌐 [INTERNET RESTORED]: Reloading WebView automatically...');
+          _controller.loadRequest(Uri.parse(_targetUrl));
+        }
+      }
+    } catch (e) {
+      debugPrint('Connectivity check error: $e');
+    } finally {
+      _isCheckingConnection = false;
+    }
   }
 
   /// Memuat & Mengaplikasikan Konfigurasi URL & Identitas Dinamis (Dengan Dual Fail-Safe Server & GitHub Backup)
@@ -101,7 +194,9 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
       final cachedUrl = prefs.getString('cached_target_url');
       if (cachedUrl != null && cachedUrl.isNotEmpty && cachedUrl != _targetUrl) {
         _targetUrl = cachedUrl;
-        _controller.loadRequest(Uri.parse(_targetUrl));
+        if (!_isOffline) {
+          _controller.loadRequest(Uri.parse(_targetUrl));
+        }
       }
 
       final cachedAppName = prefs.getString('cached_app_name');
@@ -179,7 +274,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
       if (remoteUrl != null && remoteUrl.isNotEmpty && remoteUrl != _targetUrl) {
         _targetUrl = remoteUrl;
         await prefs.setString('cached_target_url', remoteUrl);
-        if (mounted) {
+        if (mounted && !_isOffline) {
           _controller.loadRequest(Uri.parse(_targetUrl));
         }
       }
@@ -193,7 +288,6 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
     await OneSignalService.instance.init();
     OneSignalService.instance.addPushSubscriptionObserver(_onPushSubscriptionChanged);
 
-    // Periksa status subscription saat pertama kali diinisialisasi
     final currentId = OneSignalService.instance.pushSubscriptionId;
     _checkAndShowVerificationDialog(currentId);
   }
@@ -205,7 +299,6 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
   void _checkAndShowVerificationDialog(String? id) {
     if (_verificationDialogShown) return;
 
-    // Verifikasi ID subscription asli dari server OneSignal (bukan local- ID)
     if (id != null && id.isNotEmpty && !id.startsWith('local-')) {
       _verificationDialogShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -224,35 +317,38 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
         ),
-        title: const Text(
-          'Your OneSignal SDK integration is complete!',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 16,
-          ),
+        title: const Row(
+          children: [
+            Icon(Icons.verified_user_rounded, color: Color(0xFF10B981)),
+            SizedBox(width: 10),
+            Text(
+              'Notifikasi Aktif',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
         ),
         content: const Text(
-          'You can now send Push Notifications & In-App Messages through OneSignal. Tap below to enable push notifications.',
-          style: TextStyle(color: Color(0xFFCBD5E1), fontSize: 13),
+          'Aplikasi e-KOPI Polda Kalteng berhasil terhubung ke server Notifikasi OS.',
+          style: TextStyle(
+            color: Color(0xFFCBD5E1),
+            fontSize: 13,
+          ),
         ),
         actions: [
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFF59E0B),
-              foregroundColor: const Color(0xFF0F172A),
+              backgroundColor: const Color(0xFF10B981),
+              foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
               ),
             ),
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              OneSignalService.instance.requestPushPermission();
-            },
-            child: const Text(
-              'Got it',
-              style: TextStyle(fontWeight: FontWeight.w900),
-            ),
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Mengerti', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -392,8 +488,10 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
             if (mounted) {
               setState(() {
                 _isLoading = true;
-                _hasError = false;
-                _errorMessage = '';
+                if (!_isOffline) {
+                  _hasError = false;
+                  _errorMessage = '';
+                }
               });
             }
           },
@@ -409,15 +507,15 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
             if ((error.isForMainFrame ?? true) && mounted) {
               setState(() {
                 _hasError = true;
+                _isOffline = true;
                 _isLoading = false;
-                _errorMessage = error.description;
+                _errorMessage = 'Koneksi internet Anda sedang tidak aktif. Silakan periksa jaringan Wi-Fi atau Paket Data seluler Anda.';
               });
             }
           },
           onNavigationRequest: (NavigationRequest request) async {
             final Uri uri = Uri.parse(request.url);
 
-            // Handle external schemes (WhatsApp, Phone Call, Email, Maps, etc.)
             if (!['http', 'https'].contains(uri.scheme) ||
                 request.url.contains('wa.me') ||
                 request.url.contains('api.whatsapp.com')) {
@@ -436,42 +534,36 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
         ),
       );
 
-    // Android specific WebView settings (Geolocation, File Access, DomStorage)
     if (controller.platform is AndroidWebViewController) {
-      final androidController = controller.platform as AndroidWebViewController;
-      androidController.setMediaPlaybackRequiresUserGesture(false);
-      androidController.setOnPlatformPermissionRequest((request) {
-        request.grant();
-      });
+      AndroidWebViewController.enableDebugging(false);
+      (controller.platform as AndroidWebViewController)
+          .setMediaPlaybackRequiresUserGesture(false);
     }
 
-    controller.loadRequest(Uri.parse(_targetUrl));
     _controller = controller;
+    
+    // Hanya muat URL jika internet aktif saat pertama kali dibuka
+    if (!_isOffline) {
+      _controller.loadRequest(Uri.parse(_targetUrl));
+    }
   }
 
-  /// Reload webpage
   Future<void> _reloadPage() async {
-    setState(() {
-      _hasError = false;
-      _isLoading = true;
-    });
-    await _controller.reload();
+    await _checkInternetConnectivity(forceReload: true);
   }
 
-  /// Reset to Home URL
-  void _goToHome() {
-    setState(() {
-      _hasError = false;
-      _isLoading = true;
-    });
-    _controller.loadRequest(Uri.parse(_targetUrl));
+  Future<void> _goToHome() async {
+    await _checkInternetConnectivity();
+    if (!_isOffline) {
+      _controller.loadRequest(Uri.parse(_targetUrl));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (bool didPop, Object? result) async {
+      onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
 
         if (await _controller.canGoBack()) {
@@ -487,14 +579,14 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                 ),
                 title: const Row(
                   children: [
-                    Icon(Icons.exit_to_app, color: Color(0xFFF59E0B)),
+                    Icon(Icons.exit_to_app_rounded, color: Color(0xFFF59E0B)),
                     SizedBox(width: 10),
                     Text(
-                      'Keluar Aplikasi?',
+                      'Keluar Aplikasi',
                       style: TextStyle(
                         color: Colors.white,
-                        fontWeight: FontWeight.bold,
                         fontSize: 16,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ],
@@ -652,9 +744,9 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                     value: 'reload',
                     child: Row(
                       children: [
-                        Icon(Icons.refresh, color: Colors.blueAccent, size: 18),
+                        Icon(Icons.refresh, color: Color(0xFF38BDF8), size: 18),
                         SizedBox(width: 10),
-                        Text('Muat Ulang Halaman', style: TextStyle(color: Colors.white, fontSize: 12)),
+                        Text('Refresh Halaman', style: TextStyle(color: Colors.white, fontSize: 12)),
                       ],
                     ),
                   ),
@@ -662,7 +754,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                     value: 'clear_cache',
                     child: Row(
                       children: [
-                        Icon(Icons.cleaning_services, color: Colors.amber, size: 18),
+                        Icon(Icons.cleaning_services, color: Color(0xFFFB7185), size: 18),
                         SizedBox(width: 10),
                         Text('Bersihkan Cache', style: TextStyle(color: Colors.white, fontSize: 12)),
                       ],
@@ -672,7 +764,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                     value: 'open_browser',
                     child: Row(
                       children: [
-                        Icon(Icons.open_in_browser, color: Color(0xFF10B981), size: 18),
+                        Icon(Icons.open_in_browser, color: Color(0xFFA7F3D0), size: 18),
                         SizedBox(width: 10),
                         Text('Buka di Browser', style: TextStyle(color: Colors.white, fontSize: 12)),
                       ],
@@ -687,7 +779,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
           child: Column(
             children: [
               // Linear Loading Indicator
-              if (_isLoading && !_hasError)
+              if (_isLoading && !_hasError && !_isOffline)
                 LinearProgressIndicator(
                   value: _loadingProgress / 100.0,
                   backgroundColor: const Color(0xFF1E293B),
@@ -695,9 +787,9 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                   minHeight: 3,
                 ),
 
-              // Main Body Content
+              // Main Body Content (WebView atau Screen Placeholder Offline)
               Expanded(
-                child: _hasError
+                child: (_hasError || _isOffline)
                     ? _buildErrorScreen()
                     : WebViewWidget(controller: _controller),
               ),
@@ -708,64 +800,68 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
     );
   }
 
-  /// Offline / Network / Maintenance Error View Placeholder
+  /// Screen Placeholder "Koneksi Internet Anda Sedang Tidak Aktif" (Offline Realtime Monitor UI)
   Widget _buildErrorScreen() {
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 40),
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 36),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // Logo & Badge Header
+            const SizedBox(height: 20),
+            
+            // Icon Wireless Offline & Pulse Glow Animation
             Stack(
               alignment: Alignment.center,
               children: [
                 Container(
-                  width: 100,
-                  height: 100,
+                  width: 110,
+                  height: 110,
                   decoration: BoxDecoration(
-                    color: const Color(0x1AF59E0B),
+                    color: const Color(0x1AE11D48),
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: const Color(0x4DF59E0B),
+                      color: const Color(0x4DE11D48),
                       width: 2,
                     ),
                   ),
                 ),
-                Image.asset(
-                  'assets/logo-psikologi.png',
-                  width: 58,
-                  height: 58,
-                  fit: BoxFit.contain,
-                  errorBuilder: (ctx, err, stack) => const Icon(
-                    Icons.signal_wifi_connected_no_internet_4_rounded,
-                    color: Color(0xFFF59E0B),
-                    size: 48,
+                Container(
+                  width: 84,
+                  height: 84,
+                  decoration: const BoxDecoration(
+                    color: Color(0x33E11D48),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.wifi_off_rounded,
+                    color: Color(0xFFFB7185),
+                    size: 44,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 24),
 
-            // Badge Warning
+            // Badge Status Offline
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
               decoration: BoxDecoration(
-                color: const Color(0x26F59E0B),
+                color: const Color(0x26E11D48),
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: const Color(0x66F59E0B)),
+                border: Border.all(color: const Color(0x66E11D48)),
               ),
               child: const Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 14),
+                  Icon(Icons.signal_wifi_connected_no_internet_4_rounded, color: Color(0xFFFB7185), size: 14),
                   SizedBox(width: 6),
                   Text(
-                    'KONEKSI TERPUTUS / SERVER DOWN',
+                    'STATUS KONEKSI: OFFLINE',
                     style: TextStyle(
-                      color: Color(0xFFF59E0B),
+                      color: Color(0xFFFB7185),
                       fontSize: 10,
                       fontWeight: FontWeight.w900,
                       letterSpacing: 0.8,
@@ -776,14 +872,14 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Title
+            // Main Title
             const Text(
-              'Gagal Memuat Layanan e-KOPI',
+              'Koneksi internet Anda sedang tidak aktif',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 19,
-                fontWeight: FontWeight.w800,
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
                 letterSpacing: 0.2,
               ),
             ),
@@ -791,7 +887,7 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
 
             // Subtitle Description
             const Text(
-              'Aplikasi tidak dapat terhubung ke server target. Pastikan jaringan internet ponsel Anda terhubung dengan stabil atau server sedang dalam pemeliharaan berkala.',
+              'Aplikasi e-KOPI Polda Kalteng tidak dapat terhubung ke server. Silakan aktifkan koneksi Wi-Fi atau Paket Data seluler di perangkat Anda untuk melanjutkan.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Color(0xFF94A3B8),
@@ -799,42 +895,47 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                 height: 1.5,
               ),
             ),
+            const SizedBox(height: 24),
 
-            // Error Details Card
-            if (_errorMessage.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: const Color(0x1AE11D48),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0x4DE11D48)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.info_outline, color: Color(0xFFFB7185), size: 16),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _errorMessage,
-                        style: const TextStyle(
-                          color: Color(0xFFFB7185),
-                          fontSize: 10.5,
-                          fontFamily: 'monospace',
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+            // Auto-Monitoring Realtime Badge Spinner
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF334155)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        _isCheckingConnection ? const Color(0xFFF59E0B) : const Color(0xFF94A3B8),
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    _isCheckingConnection
+                        ? 'Mencoba menghubungkan kembali...'
+                        : 'Memantau jaringan otomatis setiap 5 detik',
+                    style: const TextStyle(
+                      color: Color(0xFFCBD5E1),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
 
             const SizedBox(height: 32),
 
-            // Primary Action Button (Coba Lagi)
+            // Primary Action Button (Muat Ulang / Cek Koneksi)
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -847,13 +948,10 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
                   ),
                   elevation: 4,
                 ),
-                onPressed: () async {
-                  await _fetchAndApplyDynamicConfig();
-                  await _reloadPage();
-                },
+                onPressed: () => _checkInternetConnectivity(forceReload: true),
                 icon: const Icon(Icons.refresh_rounded, size: 20),
                 label: const Text(
-                  'MUAT ULANG & CEK KONEKSI',
+                  'CEK KONEKSI & MUAT ULANG',
                   style: TextStyle(
                     fontWeight: FontWeight.w900,
                     fontSize: 13,
