@@ -170,10 +170,11 @@ class _EkopiWebViewScreenState extends State<EkopiWebViewScreen> {
           }
         });
 
-        // LOGIKA AUTOMATIC RECOVERY: Jika sebelumnya offline dan sekarang internet AKTIF kembali -> Tutup overlay & muat ulang webview!
-        if ((wasOffline && isInternetReachable) || (forceReload && isInternetReachable)) {
-          debugPrint('🌐 [INTERNET RESTORED]: Reloading WebView automatically...');
-          _controller.loadRequest(Uri.parse(_targetUrl));
+        // LOGIKA AUTOMATIC RECOVERY: Ketika internet terhubung kembali, JANGAN reload link, biarkan melanjutkan halaman WebView yang sedang dibuka.
+        if (wasOffline && isInternetReachable) {
+          debugPrint('🌐 [INTERNET RESTORED]: Internet connected back! Resuming current WebView page without reloading link...');
+        } else if (forceReload && isInternetReachable) {
+          _controller.reload();
         }
       }
     } catch (e) {
